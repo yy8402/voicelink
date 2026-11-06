@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+resources="$(cd "$(dirname "$0")/../Resources" && pwd)"
+exec "$HOME/Library/Application Support/Wi-Fi VoiceLink/venv/bin/python" "$resources/bridge.py" "$@"
