@@ -1,4 +1,7 @@
 #!/bin/sh
 set -eu
+if [ "$#" -eq 0 ]; then
+    exec /bin/launchctl kickstart "gui/$(id -u)/org.wifivoicelink.bridge"
+fi
 resources="$(cd "$(dirname "$0")/../Resources" && pwd)"
 exec "$HOME/Library/Application Support/Wi-Fi VoiceLink/venv/bin/python" "$resources/bridge.py" "$@"

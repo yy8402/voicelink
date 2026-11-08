@@ -16,6 +16,10 @@ class BridgeError(Exception):
     pass
 
 
+class MissingAudioDevice(BridgeError):
+    pass
+
+
 RATE = 16000
 PORT = 42574
 
@@ -67,20 +71,37 @@ class AudioBuffer:
         return self.silence
 
 
-def live_audio(connection, inject_name, capture_name, speaker_gain, button_socket, key, nonce):
+def audio_routes(inject_name, capture_name):
     try:
         import sounddevice as sd
     except ImportError as exc:
-        raise BridgeError("Install the live audio dependencies from tools/requirements-live-audio.txt") from exc
+        raise BridgeError("Install the live audio dependencies from macos/requirements.txt") from exc
 
     try:
         inject = sd.query_devices(inject_name, "output")
         capture = sd.query_devices(capture_name, "input")
     except ValueError as exc:
-        raise BridgeError(f"Missing Core Audio device: {exc}") from exc
+        raise MissingAudioDevice(f"Missing Core Audio device: {exc}") from exc
     if inject["index"] == capture["index"]:
         raise BridgeError("Use separate Core Audio devices for the microphone and speaker routes")
 
+    return sd, inject, capture
+
+
+def check_audio(inject_name, capture_name):
+    sd, inject, capture = audio_routes(inject_name, capture_name)
+    try:
+        sd.check_output_settings(device=inject["index"], channels=2,
+                                 dtype="int16", samplerate=RATE)
+        sd.check_input_settings(device=capture["index"], channels=1,
+                                dtype="int16", samplerate=RATE)
+    except sd.PortAudioError as exc:
+        raise BridgeError(f"Core Audio routes cannot run at {RATE} Hz: {exc}") from exc
+    print(f"Core Audio routes ready: {inject['name']} and {capture['name']}.")
+
+
+def live_audio(connection, inject_name, capture_name, speaker_gain, button_socket, key, nonce):
+    sd, inject, capture = audio_routes(inject_name, capture_name)
     frames = 256
     mono_bytes = frames * 2
     silence = bytes(mono_bytes)
@@ -174,17 +195,26 @@ def serve(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--key-file", required=True, type=Path, help="Local pairing key file")
+    parser.add_argument("--key-file", type=Path, help="Local pairing key file")
     parser.add_argument("--mic-device", default="BlackHole 2ch", help="Core Audio route for the device microphone")
     parser.add_argument("--speaker-device", default="BlackHole 16ch", help="Core Audio route for device playback")
     parser.add_argument("--speaker-gain", type=float, choices=(1, 1.5, 2, 2.5, 3, 4, 5),
                         default=5, help="Live speaker gain multiplier (default: 5)")
     parser.add_argument("--button-socket", type=Path, help="Local shortcut service socket")
+    parser.add_argument("--check-audio", action="store_true", help="Verify the selected Core Audio routes")
     args = parser.parse_args()
     try:
-        serve(args)
+        if args.check_audio:
+            check_audio(args.mic_device, args.speaker_device)
+        elif args.key_file is None:
+            parser.error("--key-file is required to start the bridge")
+        else:
+            serve(args)
     except KeyboardInterrupt:
         print("\nAudio bridge stopped.", file=sys.stderr)
+    except MissingAudioDevice as exc:
+        print(f"Wi-Fi audio failed: {exc}", file=sys.stderr)
+        return 3
     except (OSError, BridgeError) as exc:
         print(f"Wi-Fi audio failed: {exc}", file=sys.stderr)
         return 1

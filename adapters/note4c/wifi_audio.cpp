@@ -209,17 +209,45 @@ bool launch(const Pairing &pairing) {
 const char *field(const cJSON *request, const char *name) {
   return cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(request, name));
 }
-} // namespace
+esp_err_t save_pairing(const Pairing &pairing) {
+  nvs_handle_t nvs;
+  auto result = nvs_open("wifi_audio", NVS_READWRITE, &nvs);
+  if (result == ESP_OK) {
+    result = nvs_set_blob(nvs, "pairing", &pairing, sizeof pairing);
+    if (result == ESP_OK)
+      result = nvs_commit(nvs);
+    nvs_close(nvs);
+  }
+  return result;
+}
 
-void wifi_audio::init() {
+bool load_pairing(Pairing &pairing) {
   nvs_handle_t nvs;
   if (nvs_open("wifi_audio", NVS_READONLY, &nvs) != ESP_OK)
-    return;
-  Pairing pairing{};
+    return false;
   size_t size = sizeof pairing;
   const auto result = nvs_get_blob(nvs, "pairing", &pairing, &size);
   nvs_close(nvs);
-  if (result == ESP_OK && size == sizeof pairing && !busy.exchange(true))
+  return result == ESP_OK && size == sizeof pairing;
+}
+
+bool set_credentials(Pairing &pairing, const cJSON *request) {
+  const char *ssid = field(request, "ssid");
+  const char *password = field(request, "password");
+  if (!ssid || !*ssid || strlen(ssid) > sizeof pairing.wifi.sta.ssid ||
+      !password || strlen(password) > sizeof pairing.wifi.sta.password)
+    return false;
+  memset(pairing.wifi.sta.ssid, 0, sizeof pairing.wifi.sta.ssid);
+  memset(pairing.wifi.sta.password, 0, sizeof pairing.wifi.sta.password);
+  memcpy(pairing.wifi.sta.ssid, ssid, strlen(ssid));
+  memcpy(pairing.wifi.sta.password, password, strlen(password));
+  return true;
+}
+} // namespace
+
+void wifi_audio::init() {
+  Pairing pairing{};
+  if (load_pairing(pairing) && !busy.exchange(true))
     launch(pairing);
 }
 
@@ -233,32 +261,28 @@ const char *wifi_audio::status() {
 }
 
 const char *wifi_audio::pair(const cJSON *request) {
-  const char *ssid = field(request, "ssid");
-  const char *password = field(request, "password");
   const char *key = field(request, "key");
   Pairing pairing{};
-  if (!ssid || !*ssid || strlen(ssid) > sizeof pairing.wifi.sta.ssid ||
-      !password || strlen(password) > sizeof pairing.wifi.sta.password ||
-      !key || strlen(key) != key_length)
+  if (!key || strlen(key) != key_length || !set_credentials(pairing, request))
     return "Invalid Wi-Fi audio pairing";
   if (busy.exchange(true))
     return "Wi-Fi audio already paired";
 
-  memcpy(pairing.wifi.sta.ssid, ssid, strlen(ssid));
-  memcpy(pairing.wifi.sta.password, password, strlen(password));
   memcpy(pairing.key, key, sizeof pairing.key);
 
-  nvs_handle_t nvs;
-  auto result = nvs_open("wifi_audio", NVS_READWRITE, &nvs);
-  if (result == ESP_OK) {
-    result = nvs_set_blob(nvs, "pairing", &pairing, sizeof pairing);
-    if (result == ESP_OK)
-      result = nvs_commit(nvs);
-    nvs_close(nvs);
-  }
+  const auto result = save_pairing(pairing);
   if (result != ESP_OK) {
     busy = false;
     return "Could not save Wi-Fi pairing";
   }
   return launch(pairing) ? nullptr : status();
+}
+
+const char *wifi_audio::configure(const cJSON *request) {
+  Pairing pairing{};
+  if (!load_pairing(pairing))
+    return "Pair the device before changing Wi-Fi settings";
+  if (!set_credentials(pairing, request))
+    return "Invalid Wi-Fi credentials";
+  return save_pairing(pairing) == ESP_OK ? nullptr : "Could not save Wi-Fi credentials";
 }
